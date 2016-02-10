@@ -1,6 +1,6 @@
 <?php
 /**
- * Copyright Zikula Foundation 2009 - Zikula Application Framework
+ * Copyright Zikula Foundation 2016 - Zikula Application Framework
  *
  * This work is contributed to the Zikula Foundation under one or more
  * Contributor Agreements and licensed to You under the following license:
@@ -11,34 +11,49 @@
  * information regarding copyright and licensing.
  */
 
-namespace Zikula\ThemeModule;
+namespace Zikula\ThemeModule\Helper;
 
-use ModUtil;
-use FileUtil;
-use ZLanguage;
-use ThemeUtil;
-use ServiceUtil;
+use Symfony\Component\HttpKernel\KernelInterface;
+use Zikula\ThemeModule\Entity\Repository\ThemeEntityRepository;
 use Zikula\ThemeModule\Entity\ThemeEntity;
 use Zikula\Bundle\CoreBundle\Bundle\Scanner;
-use ZLoader;
 use Zikula\Bundle\CoreBundle\Bundle\Bootstrap;
 use Zikula\Bundle\CoreBundle\Bundle\Helper\BootstrapHelper;
 
 /**
  * Helper functions for the theme module
  */
-class Util
+class BundleSyncHelper
 {
+    /**
+     * @var KernelInterface
+     */
+    private $kernel;
+    /**
+     * @var ThemeEntityRepository
+     */
+    private $themeEntityRepository;
+
+    /**
+     * BundleSyncHelper constructor.
+     * @param $kernel
+     * @param $themeEntityRepository
+     */
+    public function __construct(KernelInterface $kernel, ThemeEntityRepository $themeEntityRepository)
+    {
+        $this->kernel = $kernel;
+        $this->themeEntityRepository = $themeEntityRepository;
+    }
+
     /**
      * Regenerates the theme list
      * @return bool true
      * @throws \Exception
      */
-    public static function regenerate()
+    public function regenerate()
     {
-        $sm = ServiceUtil::getManager();
         $boot = new Bootstrap();
-        $helper = new BootstrapHelper($boot->getConnection($sm->get('kernel')));
+        $helper = new BootstrapHelper($boot->getConnection($this->kernel));
 
         // sync the filesystem and the bundles table
         $helper->load();
@@ -54,20 +69,20 @@ class Util
         foreach ($newThemes as $name => $themeMetaData) {
             // PSR-0 is @deprecated - remove in Core-2.0
             foreach ($themeMetaData->getPsr0() as $ns => $path) {
-                ZLoader::addPrefix($ns, $path);
+                \ZLoader::addPrefix($ns, $path);
             }
             foreach ($themeMetaData->getPsr4() as $ns => $path) {
-                ZLoader::addPrefixPsr4($ns, $path);
+                \ZLoader::addPrefixPsr4($ns, $path);
             }
 
             $bundleClass = $themeMetaData->getClass();
 
-            /** @var $bundle \Zikula\Core\AbstractTheme */
+            /** @var $bundle \Zikula\ThemeModule\AbstractTheme */
             $bundle = new $bundleClass();
             $versionClass = $bundle->getVersionClass();
 
             if (class_exists($versionClass)) {
-                // 1.4-module spec - deprecated - remove in Core-2.0
+                // 1.4-module spec - @deprecated - remove in Core-2.0
                 $version = new $versionClass($bundle);
                 $version['name'] = $bundle->getName();
 
@@ -86,18 +101,18 @@ class Util
             $themeVersionArray['directory'] = implode('/', $directory);
 
             // loads the gettext domain for theme
-            ZLanguage::bindThemeDomain($bundle->getName());
+            \ZLanguage::bindThemeDomain($bundle->getName());
 
             // set defaults for all themes
             $themeVersionArray['type'] = 3;
-            $themeVersionArray['state'] = 1;
+            $themeVersionArray['state'] = ThemeEntityRepository::STATE_INACTIVE;
             $themeVersionArray['contact'] = 3;
 
             $filethemes[$bundle->getName()] = $themeVersionArray;
         }
 
-        // scan for old theme types (<Core-1.4) @deprecated - remove at 2.0
-        $dirArray = FileUtil::getFiles('themes', false, true, null, 'd');
+        // scan for old theme types (<Core-1.4) @deprecated - remove at Core-2.0
+        $dirArray = \FileUtil::getFiles('themes', false, true, null, 'd');
         foreach ($dirArray as $dir) {
             // Work out the theme type
             if (file_exists("themes/$dir/version.php")) {
@@ -123,7 +138,7 @@ class Util
                     'admin' => (isset($themeversion['admin']) ? (int)$themeversion['admin'] : '0'),
                     'user' => (isset($themeversion['user']) ? (int)$themeversion['user'] : '1'),
                     'system' => (isset($themeversion['system']) ? (int)$themeversion['system'] : '0'),
-                    'state' => (isset($themeversion['state']) ? $themeversion['state'] : ThemeUtil::STATE_ACTIVE),
+                    'state' => (isset($themeversion['state']) ? $themeversion['state'] : ThemeEntityRepository::STATE_ACTIVE),
                     'contact' => (isset($themeversion['contact']) ? $themeversion['contact'] : ''),
                     'xhtml' => (isset($themeversion['xhtml']) ? (int)$themeversion['xhtml'] : 1));
 
@@ -131,13 +146,11 @@ class Util
             unset($themetype);
         }
 
-        /****
+        /**
          * Persist themes
          */
-        $entityManager = $sm->get('doctrine.entitymanager');
-
         $dbthemes = array();
-        $themeEntities = $entityManager->getRepository('ZikulaThemeModule:ThemeEntity')->findAll();
+        $themeEntities = $this->themeEntityRepository->findAll();
 
         // @todo - can this be done with the `findAll()` method or doctrine (index by name, hydrate to array?)
         foreach ($themeEntities as $entity) {
@@ -150,7 +163,7 @@ class Util
             if (empty($filethemes[$name])) {
                 // delete a running configuration
                 try {
-                    ModUtil::apiFunc('ZikulaThemeModule', 'admin', 'deleterunningconfig', array('themename' => $name));
+                    \ModUtil::apiFunc('ZikulaThemeModule', 'admin', 'deleterunningconfig', array('themename' => $name));
                 } catch (\Exception $e) {
                     if (\System::isInstalling()) {
                         // silent fail when installing or upgrading
@@ -160,8 +173,8 @@ class Util
                 }
 
                 // delete item from db
-                $item = $entityManager->getRepository('ZikulaThemeModule:ThemeEntity')->findOneBy(array('name' => $name));
-                $entityManager->remove($item);
+                $item = $this->themeEntityRepository->findOneBy(array('name' => $name));
+                $this->themeEntityRepository->removeAndFlush($item);
 
                 unset($dbthemes[$name]);
             }
@@ -171,13 +184,10 @@ class Util
         // or if any current themes have been upgraded
         foreach ($filethemes as $name => $themeinfo) {
             if (empty($dbthemes[$name])) {
-                // new theme
-                $themeinfo['state'] = ThemeUtil::STATE_ACTIVE;
-
                 // add item to db
                 $item = new ThemeEntity();
                 $item->merge($themeinfo);
-                $entityManager->persist($item);
+                $this->themeEntityRepository->persistAndFlush($item);
             }
         }
 
@@ -191,20 +201,18 @@ class Util
                         ($themeinfo['admin'] != $dbthemes[$name]['admin']) ||
                         ($themeinfo['user'] != $dbthemes[$name]['user']) ||
                         ($themeinfo['system'] != $dbthemes[$name]['system']) ||
-                        ($themeinfo['state'] != $dbthemes[$name]['state']) ||
                         ($themeinfo['contact'] != $dbthemes[$name]['contact']) ||
                         ($themeinfo['xhtml'] != $dbthemes[$name]['xhtml'])) {
                     $themeinfo['id'] = $dbthemes[$name]['id'];
 
                     // update item
                     /** @var $item ThemeEntity */
-                    $item = $entityManager->getRepository('ZikulaThemeModule:ThemeEntity')->find($themeinfo['id']);
+                    $item = $this->themeEntityRepository->find($themeinfo['id']);
                     $item->merge($themeinfo);
+                    $this->themeEntityRepository->persistAndFlush($item);
                 }
             }
         }
-
-        $entityManager->flush();
 
         return true;
     }
