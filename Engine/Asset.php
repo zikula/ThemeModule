@@ -87,7 +87,7 @@ class Asset
     {
         $publicDir = str_replace('\\', '/', $this->kernel->getProjectDir()) . '/public';
         $basePath = $this->router->getContext()->getBaseUrl();
-        $httpRootDir = str_replace($basePath, '', $publicDir);
+        $httpRootDir = substr($publicDir,0,-strlen($basePath));
 
         // return immediately for straight asset paths
         $path = s($path);
